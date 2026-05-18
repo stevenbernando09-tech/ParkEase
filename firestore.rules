@@ -1,0 +1,153 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Phase 0: Default Deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Phase 3: Primitives
+    function isSignedIn() {
+      return request.auth != null;
+    }
+    function isVerified() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+    function incoming() {
+      return request.resource.data;
+    }
+    function existing() {
+      return resource.data;
+    }
+
+    // Validation Helpers
+    function isValidMarketplace(data) {
+      return data.userId == request.auth.uid 
+        && data.platformName in ['shopee', 'tokopedia', 'tiktok', 'offline']
+        && data.status in ['active', 'error', 'disconnected']
+        && (data.get('updatedAt', null) == null || data.updatedAt == request.time);
+    }
+
+    function isValidProduct(data) {
+      return data.userId == request.auth.uid 
+        && data.name is string && data.name.size() > 0 && data.name.size() <= 200
+        && data.sku is string && data.sku.size() <= 50
+        && data.stock is int && data.stock >= 0
+        && (data.get('updatedAt', null) == null || data.updatedAt == request.time);
+    }
+
+    function isValidOrder(data) {
+      return data.userId == request.auth.uid
+        && data.marketplaceId is string
+        && data.totalAmount is number && data.totalAmount >= 0
+        && data.status in ['pending', 'processing', 'shipped', 'completed', 'cancelled']
+        && (data.get('createdAt', null) == null || data.createdAt == request.time);
+    }
+
+    function isValidParkingLot(data) {
+      return data.managerId == request.auth.uid
+        && data.name is string && data.name.size() > 0
+        && data.totalSlots is int && data.totalSlots > 0;
+    }
+
+    function isValidParkingSlot(data) {
+      return data.parkingLotId is string
+        && data.slotNumber is string
+        && data.status in ['empty', 'occupied', 'reserved', 'maintenance'];
+    }
+    
+    function isValidReservation(data) {
+      return data.driverId == request.auth.uid
+        && data.parkingLotId is string
+        && data.slotId is string
+        && data.status in ['active', 'completed', 'cancelled'];
+    }
+
+    // Marketplaces
+    match /marketplaces/{marketplaceId} {
+      allow get: if isOwner(existing().userId);
+      allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isVerified() && isValidId(marketplaceId) && isValidMarketplace(incoming())
+        && incoming().keys().hasAll(['userId', 'platformName', 'status'])
+        && incoming().keys().size() >= 3;
+      allow update: if isVerified() && isOwner(existing().userId) && isValidMarketplace(incoming())
+        && incoming().userId == existing().userId
+        && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'apiKey', 'apiSecret', 'updatedAt']);
+      allow delete: if isOwner(existing().userId);
+    }
+
+    // Products
+    match /products/{productId} {
+      allow get: if isOwner(existing().userId);
+      allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isVerified() && isValidId(productId) && isValidProduct(incoming())
+        && incoming().keys().hasAll(['userId', 'name', 'sku', 'stock'])
+        && incoming().keys().size() >= 4;
+      allow update: if isVerified() && isOwner(existing().userId) && isValidProduct(incoming())
+        && incoming().userId == existing().userId
+        && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'stock', 'price', 'category', 'syncedPlatforms', 'updatedAt']);
+      allow delete: if isOwner(existing().userId);
+    }
+
+    // Orders
+    match /orders/{orderId} {
+      allow get: if isOwner(existing().userId);
+      allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isVerified() && isValidId(orderId) && isValidOrder(incoming())
+        && incoming().keys().hasAll(['userId', 'marketplaceId', 'totalAmount', 'status'])
+        && incoming().keys().size() >= 4;
+      allow update: if isVerified() && isOwner(existing().userId) && isValidOrder(incoming())
+        && incoming().userId == existing().userId
+        && (existing().status != 'completed' && existing().status != 'cancelled')
+        && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt']);
+      allow delete: if false; 
+    }
+
+    // Parking Lots
+    match /parkingLots/{parkingLotId} {
+      allow read: if isSignedIn(); 
+      allow create: if isVerified() && isValidId(parkingLotId) && isValidParkingLot(incoming())
+        && incoming().keys().hasAll(['managerId', 'name', 'totalSlots'])
+        && incoming().keys().size() >= 3;
+      allow update: if isVerified() && isOwner(existing().managerId) && isValidParkingLot(incoming())
+        && incoming().managerId == existing().managerId
+        && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'availableSlots', 'hourlyRate']);
+      allow delete: if isOwner(existing().managerId);
+
+      // Slots Sub-collection
+      match /slots/{slotId} {
+        allow read: if isSignedIn();
+        allow create: if isVerified() && isOwner(get(/databases/$(database)/documents/parkingLots/$(parkingLotId)).data.managerId)
+          && isValidParkingSlot(incoming())
+          && incoming().keys().hasAll(['parkingLotId', 'slotNumber', 'status'])
+          && incoming().keys().size() >= 3;
+        allow update: if isVerified() && (
+          isOwner(get(/databases/$(database)/documents/parkingLots/$(parkingLotId)).data.managerId) ||
+          (isSignedIn() && incoming().diff(existing()).affectedKeys().hasOnly(['status'])) // Allow status update for reservation logic (could be improved with existsAfter)
+        ) && isValidParkingSlot(incoming());
+        allow delete: if isOwner(get(/databases/$(database)/documents/parkingLots/$(parkingLotId)).data.managerId);
+      }
+      
+      // Reservations Sub-collection
+      match /reservations/{reservationId} {
+        allow get: if isOwner(existing().driverId) || isOwner(get(/databases/$(database)/documents/parkingLots/$(parkingLotId)).data.managerId);
+        allow list: if isSignedIn() && (resource.data.driverId == request.auth.uid || isOwner(get(/databases/$(database)/documents/parkingLots/$(parkingLotId)).data.managerId));
+        allow create: if isVerified() && isValidId(reservationId) && isValidReservation(incoming())
+          && exists(/databases/$(database)/documents/parkingLots/$(parkingLotId)/slots/$(incoming().slotId))
+          && incoming().keys().hasAll(['driverId', 'parkingLotId', 'slotId', 'status'])
+          && incoming().keys().size() >= 4;
+        allow update: if isVerified() && (isOwner(existing().driverId) || isOwner(get(/databases/$(database)/documents/parkingLots/$(parkingLotId)).data.managerId))
+          && isValidReservation(incoming())
+          && incoming().driverId == existing().driverId
+          && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'endTime', 'amountPaid']);
+        allow delete: if false;
+      }
+    }
+  }
+}

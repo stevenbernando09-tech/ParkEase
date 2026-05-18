@@ -1,0 +1,102 @@
+{
+  "entities": {
+    "Marketplace": {
+      "title": "Marketplace Integration",
+      "description": "Configuration for platform integrations like Shopee or Tokopedia",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "The owner of this integration" },
+        "platformName": { "type": "string", "enum": ["shopee", "tokopedia", "tiktok", "offline"] },
+        "apiKey": { "type": "string" },
+        "apiSecret": { "type": "string" },
+        "status": { "type": "string", "enum": ["active", "error", "disconnected"] },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "platformName", "status"]
+    },
+    "Product": {
+      "title": "Product",
+      "description": "Universal product entity synced across marketplaces",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "name": { "type": "string" },
+        "sku": { "type": "string" },
+        "stock": { "type": "integer" },
+        "price": { "type": "number" },
+        "category": { "type": "string" },
+        "syncedPlatforms": { "type": "array", "items": { "type": "string" } },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "name", "sku", "stock"]
+    },
+    "Order": {
+      "title": "Order",
+      "description": "Consolidated order from various platforms",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "marketplaceId": { "type": "string" },
+        "externalOrderId": { "type": "string" },
+        "customerName": { "type": "string" },
+        "totalAmount": { "type": "number" },
+        "status": { "type": "string", "enum": ["pending", "processing", "shipped", "completed", "cancelled"] },
+        "items": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "marketplaceId", "totalAmount", "status"]
+    },
+    "ParkingLot": {
+      "title": "Parking Lot",
+      "description": "Representation of a physical parking facility",
+      "type": "object",
+      "properties": {
+        "managerId": { "type": "string" },
+        "name": { "type": "string" },
+        "location": { "type": "string" },
+        "totalSlots": { "type": "integer" },
+        "availableSlots": { "type": "integer" },
+        "hourlyRate": { "type": "number" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["managerId", "name", "totalSlots"]
+    },
+    "ParkingSlot": {
+      "title": "Parking Slot",
+      "description": "Individual slot within a parking lot",
+      "type": "object",
+      "properties": {
+        "parkingLotId": { "type": "string" },
+        "slotNumber": { "type": "string" },
+        "status": { "type": "string", "enum": ["empty", "occupied", "reserved", "maintenance"] },
+        "sensorId": { "type": "string" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["parkingLotId", "slotNumber", "status"]
+    },
+    "ParkingReservation": {
+      "title": "Parking Reservation",
+      "description": "Booking for a parking slot by a driver",
+      "type": "object",
+      "properties": {
+        "driverId": { "type": "string" },
+        "parkingLotId": { "type": "string" },
+        "slotId": { "type": "string" },
+        "startTime": { "type": "string", "format": "date-time" },
+        "endTime": { "type": "string", "format": "date-time" },
+        "status": { "type": "string", "enum": ["active", "completed", "cancelled"] },
+        "amountPaid": { "type": "number" }
+      },
+      "required": ["driverId", "parkingLotId", "slotId", "status"]
+    }
+  },
+  "firestore": {
+    "/marketplaces/{marketplaceId}": { "schema": "Marketplace", "description": "User marketplace integrations" },
+    "/products/{productId}": { "schema": "Product", "description": "OMNICHANNEL products" },
+    "/orders/{orderId}": { "schema": "Order", "description": "Consolidated orders" },
+    "/parkingLots/{parkingLotId}": { "schema": "ParkingLot", "description": "Managed parking facilities" },
+    "/parkingLots/{parkingLotId}/slots/{slotId}": { "schema": "ParkingSlot", "description": "Slots within a lot" },
+    "/parkingLots/{parkingLotId}/reservations/{reservationId}": { "schema": "ParkingReservation", "description": "Slot bookings" }
+  }
+}
