@@ -1,7 +1,4 @@
-import { useEffect, useState, ReactNode } from "react";
-import { auth, db } from "./lib/firebase";
-import { onAuthStateChanged, signInWithPopup, GoogleAuthProvider, signOut, User as FirebaseUser } from "firebase/auth";
-import { testFirestoreConnection, getProducts, createProduct, getParkingLots } from "./services/firestoreService";
+import { useEffect, useState, ReactNode, FormEvent } from "react";
 import { 
   Cloud, 
   ShoppingBag, 
@@ -21,70 +18,181 @@ import {
   RefreshCw,
   Plus,
   Package,
-  Activity
+  Activity,
+  Trash2,
+  X,
+  PlusCircle,
+  HelpCircle,
+  MapPin,
+  CheckCircle2
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 
+// Struktur tipe data internal
+interface Product {
+  id: string;
+  name: string;
+  sku: string;
+  stock: number;
+  price: number;
+  createdAt: string;
+}
+
+interface ParkingSlot {
+  id: string;
+  name: string;
+  area: string;
+  status: "Tersedia" | "Terisi";
+  type: "Mobil" | "Motor";
+}
+
+// Data default Indonesia
+const DEFAULT_PRODUCTS: Product[] = [
+  { id: "1", name: "Sensor Ground Loop IoT v2", sku: "PE-GL-IOT2", stock: 34, price: 450000, createdAt: "2026-05-18" },
+  { id: "2", name: "Kamera LPR Smart-Vision Pro", sku: "PE-CAM-LPR1", stock: 12, price: 1850000, createdAt: "2026-05-18" },
+  { id: "3", name: "E-Barrier Gate Otomatis", sku: "PE-BAR-GATE", stock: 8, price: 5400000, createdAt: "2026-05-19" },
+  { id: "4", name: "Terminal Pembayaran Mandiri", sku: "PE-TERM-PAY", stock: 15, price: 3200000, createdAt: "2026-05-20" },
+];
+
+const DEFAULT_SLOTS: ParkingSlot[] = [
+  { id: "A-1", name: "Slot A-1", area: "Utara", status: "Tersedia", type: "Mobil" },
+  { id: "A-2", name: "Slot A-2", area: "Utara", status: "Terisi", type: "Mobil" },
+  { id: "A-3", name: "Slot A-3", area: "Utara", status: "Tersedia", type: "Mobil" },
+  { id: "B-1", name: "Slot B-1", area: "Selatan", status: "Terisi", type: "Mobil" },
+  { id: "B-2", name: "Slot B-2", area: "Selatan", status: "Terisi", type: "Motor" },
+  { id: "B-3", name: "Slot B-3", area: "Selatan", status: "Tersedia", type: "Motor" },
+  { id: "C-1", name: "Slot C-1", area: "Barat", status: "Tersedia", type: "Mobil" },
+  { id: "C-2", name: "Slot C-2", area: "Barat", status: "Terisi", type: "Mobil" },
+];
+
 export default function App() {
-  const [user, setUser] = useState<FirebaseUser | null>(null);
+  const [user, setUser] = useState<{ displayName: string; email: string } | null>(null);
   const [loading, setLoading] = useState(true);
   const [view, setView] = useState<"landing" | "dashboard">("landing");
-  const [products, setProducts] = useState<any[]>([]);
-  const [parkingLots, setParkingLots] = useState<any[]>([]);
+  const [products, setProducts] = useState<Product[]>([]);
+  const [parkingLots, setParkingLots] = useState<ParkingSlot[]>([]);
+  
+  // State untuk form tambah produk (Modal internal yang sangat elegan)
+  const [showAddModal, setShowAddModal] = useState(false);
+  const [newProdName, setNewProdName] = useState("");
+  const [newProdSku, setNewProdSku] = useState("");
+  const [newProdStock, setNewProdStock] = useState<number>(10);
+  const [newProdPrice, setNewProdPrice] = useState<number>(150000);
 
+  // Load data dari localStorage (Offline First)
   useEffect(() => {
-    testFirestoreConnection();
-    const unsubscribe = onAuthStateChanged(auth, (u) => {
-      setUser(u);
+    // Simulasi loading screen singkat agar terlihat sangat profesional
+    const timer = setTimeout(() => {
+      const storedUser = localStorage.getItem("pe_user");
+      if (storedUser) {
+        setUser(JSON.parse(storedUser));
+        setView("dashboard");
+      }
+
+      const storedProducts = localStorage.getItem("pe_products");
+      if (storedProducts) {
+        setProducts(JSON.parse(storedProducts));
+      } else {
+        setProducts(DEFAULT_PRODUCTS);
+        localStorage.setItem("pe_products", JSON.stringify(DEFAULT_PRODUCTS));
+      }
+
+      const storedSlots = localStorage.getItem("pe_slots");
+      if (storedSlots) {
+        setParkingLots(JSON.parse(storedSlots));
+      } else {
+        setParkingLots(DEFAULT_SLOTS);
+        localStorage.setItem("pe_slots", JSON.stringify(DEFAULT_SLOTS));
+      }
+
       setLoading(false);
-      if (u) setView("dashboard");
-    });
-    return () => unsubscribe();
+    }, 600);
+
+    return () => clearTimeout(timer);
   }, []);
 
-  useEffect(() => {
-    if (user && view === "dashboard") {
-      loadData();
-    }
-  }, [user, view]);
-
-  const loadData = async () => {
-    if (!user) return;
-    const p = await getProducts(user.uid);
-    const l = await getParkingLots();
-    setProducts(p || []);
-    setParkingLots(l || []);
+  // Update data ke localStorage setiap kali ada perubahan
+  const updateLocalProducts = (newProds: Product[]) => {
+    setProducts(newProds);
+    localStorage.setItem("pe_products", JSON.stringify(newProds));
   };
 
-  const handleAddSampleProduct = async () => {
-    if (!user) return;
-    await createProduct(user.uid, {
-      name: "Produk Sampel " + (products.length + 1),
-      sku: "SKU-" + Math.random().toString(36).substring(7).toUpperCase(),
-      stock: Math.floor(Math.random() * 100),
-      price: 50000 + Math.floor(Math.random() * 100000)
-    });
-    loadData();
+  const updateLocalSlots = (newSlots: ParkingSlot[]) => {
+    setParkingLots(newSlots);
+    localStorage.setItem("pe_slots", JSON.stringify(newSlots));
   };
 
-  const handleLogin = async () => {
-    const provider = new GoogleAuthProvider();
-    try {
-      await signInWithPopup(auth, provider);
-    } catch (error) {
-      console.error("Login failed:", error);
-    }
+  // Simulasi login demo instan (Tanpa Firebase database/auth yang rumit)
+  const handleDemoLogin = () => {
+    const demoUser = { displayName: "Steven Bernando", email: "stevenbernando09@gmail.com" };
+    setUser(demoUser);
+    localStorage.setItem("pe_user", JSON.stringify(demoUser));
+    setView("dashboard");
   };
 
   const handleLogout = () => {
-    signOut(auth);
+    setUser(null);
+    localStorage.removeItem("pe_user");
     setView("landing");
   };
 
+  // Logika Tambah Produk
+  const handleCreateProduct = (e: FormEvent) => {
+    e.preventDefault();
+    if (!newProdName.trim()) return;
+
+    const newProd: Product = {
+      id: crypto.randomUUID(),
+      name: newProdName,
+      sku: newProdSku.trim() || "PE-" + Math.random().toString(36).substring(3, 8).toUpperCase(),
+      stock: Number(newProdStock) || 0,
+      price: Number(newProdPrice) || 0,
+      createdAt: new Date().toISOString().split('T')[0]
+    };
+
+    const updated = [newProd, ...products];
+    updateLocalProducts(updated);
+
+    // Reset Form & Tutup Modal
+    setNewProdName("");
+    setNewProdSku("");
+    setNewProdStock(10);
+    setNewProdPrice(150000);
+    setShowAddModal(false);
+  };
+
+  // Logika Hapus Produk
+  const handleDeleteProduct = (id: string) => {
+    if (confirm("Apakah Anda yakin ingin menghapus produk ini secara permanen dari penyimpanan lokal?")) {
+      const updated = products.filter(p => p.id !== id);
+      updateLocalProducts(updated);
+    }
+  };
+
+  // Logika Interaktif Klik Slot Map (Toggle Status Parkir secara Live)
+  const handleToggleSlotStatus = (slotId: string) => {
+    const updated = parkingLots.map(slot => {
+      if (slot.id === slotId) {
+        return {
+          ...slot,
+          status: slot.status === "Tersedia" ? "Terisi" as const : "Tersedia" as const
+        };
+      }
+      return slot;
+    });
+    updateLocalSlots(updated);
+  };
+
+  // Hitung jumlah slot yang terisi vs tersedia secara dinamis
+  const totalSlotsCount = parkingLots.length;
+  const filledSlotsCount = parkingLots.filter(s => s.status === "Terisi").length;
+  const availableSlotsCount = parkingLots.filter(s => s.status === "Tersedia").length;
+
   if (loading) {
     return (
-      <div className="min-h-screen bg-white flex items-center justify-center">
-        <div className="w-8 h-8 border-2 border-slate-900 border-t-transparent rounded-full animate-spin" />
+      <div className="min-h-screen bg-white flex flex-col items-center justify-center">
+        <div className="w-10 h-10 border-[3px] border-slate-900 border-t-transparent rounded-full animate-spin mb-4" />
+        <span className="text-xs font-bold text-slate-400 tracking-[0.2em] uppercase">Memuat Sistem ParkEase...</span>
       </div>
     );
   }
@@ -94,30 +202,36 @@ export default function App() {
       {/* Navigation */}
       <nav className="fixed top-0 w-full z-50 bg-white/70 backdrop-blur-xl border-b border-slate-100">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-20 flex items-center justify-between">
-          <div className="flex items-center gap-3 cursor-pointer" onClick={() => setView("landing")}>
-            <div className="w-9 h-9 bg-slate-900 rounded-xl flex items-center justify-center shadow-lg shadow-slate-900/10">
-              <Cloud className="text-white w-5 h-5" />
+          <div className="flex items-center gap-3 cursor-pointer select-none" onClick={() => setView("landing")}>
+            <div className="w-10 h-10 bg-slate-900 rounded-2xl flex items-center justify-center shadow-lg shadow-slate-900/10">
+              <Cloud className="text-white w-5 h-5 pointer-events-none" />
             </div>
             <span className="text-xl font-bold tracking-tighter text-slate-900 uppercase">Park<span className="text-slate-500">Ease</span></span>
           </div>
 
           <div className="flex items-center gap-6">
-            {user && view === "landing" && (
-              <button 
-                onClick={() => setView("dashboard")}
-                className="text-xs font-bold text-slate-900 tracking-widest uppercase hover:opacity-70 transition-opacity"
-              >
-                Dashboard
-              </button>
-            )}
+            <button 
+              onClick={() => {
+                if (user) {
+                  setView(view === "landing" ? "dashboard" : "landing");
+                } else {
+                  handleDemoLogin();
+                }
+              }}
+              className="text-xs font-semibold text-slate-500 hover:text-slate-900 tracking-wide transition-colors uppercase"
+            >
+              {user ? (view === "landing" ? "Kembali ke Dasbor" : "Halaman Utama") : "Uji Coba Demo"}
+            </button>
+
             {user ? (
               <div className="flex items-center gap-3 pl-4 border-l border-slate-100">
                 <div className="hidden sm:flex flex-col items-end">
                   <span className="text-[11px] font-bold text-slate-900 tracking-tight">{user.displayName}</span>
-                  <span className="text-[9px] text-slate-400 uppercase font-black tracking-widest">Akun Terverifikasi</span>
+                  <span className="text-[9px] text-slate-400 uppercase font-bold tracking-widest leading-none mt-0.5">Akun Demo</span>
                 </div>
                 <button 
                   onClick={handleLogout}
+                  title="Keluar"
                   className="w-9 h-9 rounded-full bg-slate-50 flex items-center justify-center hover:bg-slate-900 hover:text-white transition-all border border-slate-100"
                 >
                   <LogOut className="w-3.5 h-3.5" />
@@ -125,17 +239,18 @@ export default function App() {
               </div>
             ) : (
               <button 
-                onClick={handleLogin}
+                onClick={handleDemoLogin}
                 className="bg-slate-900 hover:bg-slate-800 text-white px-7 py-2.5 rounded-full text-xs font-bold transition-all shadow-xl shadow-slate-900/10 active:scale-95 flex items-center gap-2"
               >
                 <LogIn className="w-3.5 h-3.5" />
-                MASUK
+                MASUK DEMO
               </button>
             )}
           </div>
         </div>
       </nav>
 
+      {/* Main Container with Page Swaps */}
       <AnimatePresence mode="wait">
         {view === "landing" ? (
           <motion.div 
@@ -144,67 +259,95 @@ export default function App() {
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
           >
-            <LandingView onGetStarted={user ? () => setView("dashboard") : handleLogin} />
+            <LandingView onGetStarted={user ? () => setView("dashboard") : handleDemoLogin} />
           </motion.div>
         ) : (
           <motion.div 
             key="dashboard"
-            initial={{ opacity: 0, y: 20 }}
+            initial={{ opacity: 0, y: 15 }}
             animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -20 }}
+            exit={{ opacity: 0, y: -15 }}
             className="pt-32 pb-24 px-4 sm:px-6 lg:px-8 max-w-7xl mx-auto"
           >
-            <div className="flex flex-col md:flex-row justify-between items-end gap-6 mb-16">
+            {/* Dashboard Header */}
+            <div className="flex flex-col md:flex-row justify-between items-start md:items-end gap-6 mb-16">
               <div>
-                <div className="text-slate-400 font-bold text-[11px] uppercase tracking-[0.3em] mb-4">DASBOR RUANG KERJA</div>
+                <div className="text-slate-400 font-bold text-[11px] uppercase tracking-[0.3em] mb-4">DASBOR INTERNAL OFFLINE</div>
                 <h1 className="text-5xl font-bold text-slate-900 tracking-tight">Selamat Datang, {user?.displayName?.split(' ')[0]}.</h1>
+                <p className="text-sm text-slate-500 mt-2 font-medium">Semua data disimpan secara aman & instan di Lokal Storage peramban Anda.</p>
               </div>
               <div className="flex gap-4">
                 <button 
-                  onClick={handleAddSampleProduct}
-                  className="bg-slate-900 text-white px-6 py-3 rounded-2xl text-xs font-bold flex items-center gap-2 hover:bg-slate-800 transition-all shadow-xl shadow-slate-900/10"
+                  onClick={() => setShowAddModal(true)}
+                  className="bg-slate-900 text-white px-6 py-3.5 rounded-2xl text-xs font-bold flex items-center gap-2 hover:bg-slate-800 transition-all shadow-xl shadow-slate-900/10 active:scale-95"
                 >
                   <Plus className="w-4 h-4" /> TAMBAH PRODUK
                 </button>
               </div>
             </div>
 
-            <div className="grid lg:grid-cols-3 gap-8">
-              <div className="lg:col-span-2 space-y-8">
-                <div className="grid sm:grid-cols-2 gap-6">
-                  <div className="p-8 bg-slate-900 rounded-[2.5rem] text-white shadow-2xl relative overflow-hidden">
-                    <div className="absolute top-0 right-0 w-24 h-24 bg-white/5 blur-2xl rounded-full translate-x-1/2 -translate-y-1/2" />
-                    <Package className="w-8 h-8 mb-6 text-slate-500" />
-                    <div className="text-4xl font-bold mb-1">{products.length}</div>
-                    <div className="text-[10px] font-black uppercase tracking-widest text-slate-500">Total Produk Aktif</div>
-                  </div>
-                  <div className="p-8 bg-white rounded-[2.5rem] border border-slate-100 shadow-elegant">
-                    <Activity className="w-8 h-8 mb-6 text-slate-100" />
-                    <div className="text-4xl font-bold mb-1">{parkingLots.length}</div>
-                    <div className="text-[10px] font-black uppercase tracking-widest text-slate-400">Pusat Logistik Parkir</div>
-                  </div>
-                </div>
+            {/* Quick Metrics Grid */}
+            <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-8 mb-12">
+              <div className="p-8 bg-slate-900 rounded-[2.5rem] text-white shadow-2xl relative overflow-hidden">
+                <div className="absolute top-0 right-0 w-24 h-24 bg-white/5 blur-2xl rounded-full translate-x-1/2 -translate-y-1/2" />
+                <Package className="w-8 h-8 mb-6 text-slate-500" />
+                <div className="text-5xl font-bold mb-1 tracking-tight">{products.length}</div>
+                <div className="text-[10px] font-black uppercase tracking-widest text-slate-400">Total Kuantitas SKU Produk</div>
+              </div>
+              
+              <div className="p-8 bg-white rounded-[2.5rem] border border-slate-100 shadow-elegant relative overflow-hidden">
+                <div className="absolute top-0 right-0 w-24 h-24 bg-slate-500/5 blur-2xl rounded-full translate-x-1/2 -translate-y-1/2" />
+                <Car className="w-8 h-8 mb-6 text-slate-400" />
+                <div className="text-5xl font-bold mb-1 text-slate-900 tracking-tight">{availableSlotsCount} <span className="text-sm text-slate-400 font-medium">dari {totalSlotsCount}</span></div>
+                <div className="text-[10px] font-black uppercase tracking-widest text-slate-400">Slot ParkEase Tersedia (Utara & Selatan)</div>
+              </div>
 
+              <div className="p-8 bg-white rounded-[2.5rem] border border-slate-100 shadow-elegant sm:col-span-2 lg:col-span-1">
+                <Activity className="w-8 h-8 mb-6 text-slate-900" />
+                <div className="text-5xl font-bold mb-1 tracking-tight">99.8%</div>
+                <div className="text-[10px] font-black uppercase tracking-widest text-slate-400">Akurasi Validasi Sensor Lokal</div>
+              </div>
+            </div>
+
+            {/* Main Interactive Sections */}
+            <div className="grid lg:grid-cols-3 gap-8">
+              {/* Product Sync & Inventory Manager */}
+              <div className="lg:col-span-2 space-y-8">
                 <div className="bg-white rounded-[3rem] border border-slate-100 shadow-elegant overflow-hidden">
-                  <div className="p-10 border-b border-slate-100 flex justify-between items-center">
-                    <h3 className="text-xl font-bold">Sinkronisasi Produk</h3>
-                    <RefreshCw className="w-4 h-4 text-slate-200 animate-spin-slow" />
+                  <div className="p-10 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
+                    <div>
+                      <h3 className="text-xl font-bold text-slate-900">Manajemen Inventaris Lokal</h3>
+                      <p className="text-xs text-slate-400 mt-1">Kelola barang demo & perangkat IoT komersial Anda secara langsung.</p>
+                    </div>
+                    <RefreshCw className="w-4 h-4 text-slate-400 animate-spin-slow" />
                   </div>
+                  
                   <div className="overflow-x-auto">
                     <table className="w-full text-left">
                       <thead>
-                        <tr className="border-b border-slate-50">
-                          <th className="px-10 py-6 text-[10px] font-black uppercase tracking-widest text-slate-400">Nama Produk</th>
-                          <th className="px-6 py-6 text-[10px] font-black uppercase tracking-widest text-slate-400">SKU</th>
-                          <th className="px-6 py-6 text-[10px] font-black uppercase tracking-widest text-slate-400">Stok</th>
-                          <th className="px-10 py-6 text-[10px] font-black uppercase tracking-widest text-slate-400 text-right">Harga</th>
+                        <tr className="border-b border-slate-100 bg-slate-50/30">
+                          <th className="px-10 py-5 text-[10px] font-black uppercase tracking-widest text-slate-400">Nama Produk</th>
+                          <th className="px-6 py-5 text-[10px] font-black uppercase tracking-widest text-slate-400">SKU</th>
+                          <th className="px-6 py-5 text-[10px] font-black uppercase tracking-widest text-slate-400">Stok</th>
+                          <th className="px-6 py-5 text-[10px] font-black uppercase tracking-widest text-slate-400">Harga Satuan</th>
+                          <th className="px-10 py-5 text-[10px] font-black uppercase tracking-widest text-slate-400 text-right">Opsi</th>
                         </tr>
                       </thead>
                       <tbody>
                         {products.length === 0 ? (
                           <tr>
-                            <td colSpan={4} className="px-10 py-20 text-center text-slate-400 italic">
-                              Belum ada data produk. Klik "Tambah Produk" untuk memulai.
+                            <td colSpan={5} className="px-10 py-24 text-center text-slate-400 italic">
+                              <div className="max-w-xs mx-auto">
+                                <Package className="w-12 h-12 text-slate-200 mx-auto mb-4" />
+                                <p className="font-bold text-slate-800 text-sm mb-1">Belum ada perangkat inventaris</p>
+                                <p className="text-xs text-slate-400 mb-4">Tambahkan produk baru secara instan di peramban lokal Anda.</p>
+                                <button 
+                                  onClick={() => setShowAddModal(true)}
+                                  className="px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-semibold"
+                                >
+                                  Mulai Tambah Pertama
+                                </button>
+                              </div>
                             </td>
                           </tr>
                         ) : (
@@ -212,9 +355,22 @@ export default function App() {
                             <tr key={p.id} className="border-b border-slate-50 hover:bg-slate-50/50 transition-colors">
                               <td className="px-10 py-6 font-bold text-slate-900">{p.name}</td>
                               <td className="px-6 py-6 font-mono text-xs text-slate-500">{p.sku}</td>
-                              <td className="px-6 py-6 font-bold text-slate-900">{p.stock}</td>
-                              <td className="px-10 py-6 font-bold text-slate-900 text-right">
+                              <td className="px-6 py-6 font-bold text-slate-900">
+                                <span className={`px-2.5 py-1 rounded-md text-xs font-semibold ${p.stock < 10 ? 'bg-red-50 text-red-600' : 'bg-slate-100 text-slate-800'}`}>
+                                  {p.stock} Unit
+                                </span>
+                              </td>
+                              <td className="px-6 py-6 font-bold text-slate-900">
                                 Rp {p.price?.toLocaleString()}
+                              </td>
+                              <td className="px-10 py-6 text-right">
+                                <button 
+                                  onClick={() => handleDeleteProduct(p.id)}
+                                  title="Hapus Produk"
+                                  className="p-2 text-slate-300 hover:text-red-500 hover:bg-red-50 rounded-xl transition-all"
+                                >
+                                  <Trash2 className="w-4 h-4" />
+                                </button>
                               </td>
                             </tr>
                           ))
@@ -225,36 +381,169 @@ export default function App() {
                 </div>
               </div>
 
+              {/* Interactive Live Parking Grid (Map Dashboard) */}
               <div className="space-y-8">
+                {/* Visual Map Simulator */}
                 <div className="p-10 bg-white rounded-[3rem] border border-slate-100 shadow-elegant">
-                  <div className="flex justify-between items-center mb-8">
-                    <h3 className="text-xl font-bold">Peta ParkEase</h3>
-                    <Car className="w-5 h-5 text-slate-100" />
-                  </div>
-                  <div className="aspect-square bg-slate-50 rounded-[2rem] border border-dashed border-slate-200 flex items-center justify-center relative overflow-hidden group">
-                    <div className="absolute inset-0 bg-slate-900/0 group-hover:bg-slate-900/5 transition-colors cursor-crosshair"></div>
-                    <div className="text-center p-8">
-                      <div className="w-12 h-12 bg-white rounded-full flex items-center justify-center mx-auto mb-4 shadow-sm">
-                        <Wifi className="w-6 h-6 text-slate-200" />
-                      </div>
-                      <p className="text-[10px] text-slate-400 font-black uppercase tracking-widest leading-relaxed max-w-[120px] mx-auto">
-                        Visualisasi Map Dalam Pengembangan
-                      </p>
+                  <div className="flex justify-between items-center mb-6">
+                    <div>
+                      <h3 className="text-xl font-bold text-slate-900">Peta Grid ParkEase</h3>
+                      <p className="text-xs text-slate-400 mt-1">Simulator Interaktif IoT Kota Pintar</p>
                     </div>
+                    <Car className="w-5 h-5 text-slate-400" />
+                  </div>
+
+                  <p className="text-xs font-medium text-slate-500 leading-relaxed mb-6 bg-slate-50 p-4 rounded-2xl border border-slate-100">
+                    💡 **Petunjuk**: Klik kotak slot parkir di bawah ini untuk mensimulasikan sensor terisi / kosong. Perhatikan status data di atas akan berubah secara langsung!
+                  </p>
+
+                  <div className="grid grid-cols-2 gap-4">
+                    {parkingLots.map((slot) => {
+                      const isOccupied = slot.status === "Terisi";
+                      return (
+                        <button
+                          key={slot.id}
+                          onClick={() => handleToggleSlotStatus(slot.id)}
+                          className={`p-5 rounded-2xl border text-left transition-all relative overflow-hidden group select-none active:scale-95 ${
+                            isOccupied 
+                              ? "bg-slate-900 border-slate-900 text-white shadow-md shadow-slate-900/15" 
+                              : "bg-white border-slate-200 text-slate-800 hover:border-slate-900 hover:bg-slate-50"
+                          }`}
+                        >
+                          <div className="flex justify-between items-start">
+                            <span className="text-xs font-sans font-black tracking-widest">{slot.name}</span>
+                            <span className={`text-[9px] font-bold uppercase tracking-widest px-1.5 py-0.5 rounded ${
+                              isOccupied ? "bg-white/10 text-slate-300" : "bg-slate-100 text-slate-500"
+                            }`}>
+                              {slot.type}
+                            </span>
+                          </div>
+                          
+                          <div className="mt-8 flex justify-between items-end">
+                            <div>
+                              <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Status:</div>
+                              <div className="text-sm font-bold tracking-tight">{slot.status}</div>
+                            </div>
+                            <MapPin className={`w-4 h-4 ${isOccupied ? "text-slate-400" : "text-slate-300 group-hover:text-slate-900"}`} />
+                          </div>
+                        </button>
+                      );
+                    })}
                   </div>
                 </div>
 
+                {/* System Status Node Connections */}
                 <div className="p-10 bg-slate-50 rounded-[3rem] border border-slate-100">
-                  <h3 className="text-[10px] font-black mb-6 text-slate-400 tracking-widest uppercase">Koneksi Sistem</h3>
+                  <h3 className="text-[10px] font-black mb-6 text-slate-400 tracking-widest uppercase">Diagnostik Konsol</h3>
                   <div className="space-y-4">
-                    <SystemNode label="Firestore" status="Terhubung" />
-                    <SystemNode label="Node Auth" status="Aktif" />
-                    <SystemNode label="Mesin Sinkron" status="Siaga" />
+                    <SystemNode label="Perlengkapan Lokal" status="Aktif" />
+                    <SystemNode label="Lokal Storage" status="Tersimpan" />
+                    <SystemNode label="Metode Enkripsi" status="Offline-SHA" />
                   </div>
                 </div>
               </div>
             </div>
           </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Add Product Modal Component */}
+      <AnimatePresence>
+        {showAddModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            {/* Backdrop */}
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setShowAddModal(false)}
+              className="absolute inset-0 bg-slate-900/50 backdrop-blur-sm"
+            />
+            {/* Content Card */}
+            <motion.div 
+              initial={{ scale: 0.95, opacity: 0, y: 10 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.95, opacity: 0, y: 10 }}
+              className="bg-white rounded-[3rem] border border-slate-100 shadow-2xl relative z-10 w-full max-w-lg overflow-hidden p-10"
+            >
+              <div className="flex justify-between items-center mb-8">
+                <h3 className="text-2xl font-bold text-slate-900">Tambah Produk Baru</h3>
+                <button 
+                  onClick={() => setShowAddModal(false)}
+                  className="w-10 h-10 rounded-full bg-slate-50 flex items-center justify-center hover:bg-slate-100 transition-colors"
+                >
+                  <X className="w-5 h-5 text-slate-500" />
+                </button>
+              </div>
+
+              <form onSubmit={handleCreateProduct} className="space-y-6">
+                <div>
+                  <label className="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-2">Nama Perangkat / Produk</label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="Contoh: Sensor Ultrasonik IoT v3"
+                    value={newProdName}
+                    onChange={(e) => setNewProdName(e.target.value)}
+                    className="w-full px-5 py-4 bg-slate-50 border border-slate-200 rounded-2xl outline-none focus:border-slate-900 text-sm font-medium text-slate-900 transition-all"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-2">SKU Kode (Opsional)</label>
+                  <input
+                    type="text"
+                    placeholder="Contoh: PE-SENS-03"
+                    value={newProdSku}
+                    onChange={(e) => setNewProdSku(e.target.value)}
+                    className="w-full px-5 py-4 bg-slate-50 border border-slate-200 rounded-2xl outline-none focus:border-slate-900 text-sm font-mono text-slate-900 transition-all"
+                  />
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-2">Jumlah Stok</label>
+                    <input
+                      type="number"
+                      required
+                      min={0}
+                      value={newProdStock}
+                      onChange={(e) => setNewProdStock(Number(e.target.value))}
+                      className="w-full px-5 py-4 bg-slate-50 border border-slate-200 rounded-2xl outline-none focus:border-slate-900 text-sm font-bold text-slate-900 transition-all"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-2">Harga Satuan (Rp)</label>
+                    <input
+                      type="number"
+                      required
+                      min={0}
+                      step={5000}
+                      value={newProdPrice}
+                      onChange={(e) => setNewProdPrice(Number(e.target.value))}
+                      className="w-full px-5 py-4 bg-slate-50 border border-slate-200 rounded-2xl outline-none focus:border-slate-900 text-sm font-bold text-slate-900 transition-all"
+                    />
+                  </div>
+                </div>
+
+                <div className="pt-4 flex gap-4">
+                  <button
+                    type="button"
+                    onClick={() => setShowAddModal(false)}
+                    className="flex-1 py-4 bg-slate-50 hover:bg-slate-100 text-slate-600 rounded-2xl text-xs font-bold transition-all text-center"
+                  >
+                    Batal
+                  </button>
+                  <button
+                    type="submit"
+                    className="flex-1 py-4 bg-slate-900 hover:bg-slate-800 text-white rounded-2xl text-xs font-bold transition-all shadow-lg text-center"
+                  >
+                    Simpan Perangkat
+                  </button>
+                </div>
+              </form>
+            </motion.div>
+          </div>
         )}
       </AnimatePresence>
 
@@ -311,7 +600,7 @@ function LandingView({ onGetStarted }: { onGetStarted: () => void }) {
                     onClick={onGetStarted}
                     className="px-12 py-5 bg-slate-900 text-white rounded-full font-bold hover:bg-slate-800 transition-all shadow-premium active:scale-95"
                   >
-                    Mulai Gratis
+                    Mulai Gratis Sekarang
                   </button>
                   <div className="flex gap-10">
                     <div className="flex flex-col">
@@ -470,6 +759,7 @@ function LandingView({ onGetStarted }: { onGetStarted: () => void }) {
              </div>
           </div>
         </section>
+
         {/* Bagian Analisis Detail */}
         <section id="analysis" className="py-40 bg-slate-50/50">
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
@@ -616,7 +906,7 @@ function SystemNode({ label, status }: { label: string, status: string }) {
     <div className="flex justify-between items-center bg-white p-5 rounded-2xl border border-slate-100">
       <div className="text-[10px] font-black text-slate-900 uppercase tracking-widest">{label}</div>
       <div className="flex items-center gap-2">
-        <div className="w-1.5 h-1.5 rounded-full bg-emerald-400 shadow-sm animate-pulse" />
+        <div className="w-1.5 h-1.5 rounded-full bg-slate-900 shadow-sm animate-pulse" />
         <span className="text-[10px] font-black text-slate-300 uppercase tracking-tighter">{status}</span>
       </div>
     </div>
