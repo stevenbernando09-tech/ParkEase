@@ -65,6 +65,44 @@ const DEFAULT_SLOTS: ParkingSlot[] = [
   { id: "C-2", name: "Slot C-2", area: "Barat", status: "Terisi", type: "Mobil" },
 ];
 
+// Fallback penyimpanan darurat jika localStorage diblokir oleh kebijakan keamanan Sandbox iFrame
+const memoryStorage: Record<string, string> = {};
+
+const safeStorage = {
+  getItem: (key: string): string | null => {
+    try {
+      if (typeof window !== "undefined" && window.localStorage) {
+        return window.localStorage.getItem(key);
+      }
+    } catch (e) {
+      console.warn("Storage lokal diblokir sandbox, menggunakan memori:", e);
+    }
+    return memoryStorage[key] || null;
+  },
+  setItem: (key: string, value: string): void => {
+    try {
+      if (typeof window !== "undefined" && window.localStorage) {
+        window.localStorage.setItem(key, value);
+        return;
+      }
+    } catch (e) {
+      console.warn("Storage lokal diblokir sandbox, menggunakan memori:", e);
+    }
+    memoryStorage[key] = value;
+  },
+  removeItem: (key: string): void => {
+    try {
+      if (typeof window !== "undefined" && window.localStorage) {
+        window.localStorage.removeItem(key);
+        return;
+      }
+    } catch (e) {
+      console.warn("Storage lokal diblokir sandbox, menggunakan memori:", e);
+    }
+    delete memoryStorage[key];
+  }
+};
+
 export default function App() {
   const [user, setUser] = useState<{ displayName: string; email: string } | null>(null);
   const [loading, setLoading] = useState(true);
@@ -79,30 +117,50 @@ export default function App() {
   const [newProdStock, setNewProdStock] = useState<number>(10);
   const [newProdPrice, setNewProdPrice] = useState<number>(150000);
 
-  // Load data dari localStorage (Offline First)
+  // State untuk Modal Masuk / Login interaktif
+  const [showLoginModal, setShowLoginModal] = useState(false);
+  const [loginName, setLoginName] = useState("Steven Bernando");
+  const [loginEmail, setLoginEmail] = useState("stevenbernando09@gmail.com");
+
+  // Load data dari safeStorage (Offline First)
   useEffect(() => {
     // Simulasi loading screen singkat agar terlihat sangat profesional
     const timer = setTimeout(() => {
-      const storedUser = localStorage.getItem("pe_user");
+      const storedUser = safeStorage.getItem("pe_user");
       if (storedUser) {
-        setUser(JSON.parse(storedUser));
-        setView("dashboard");
+        try {
+          setUser(JSON.parse(storedUser));
+          setView("dashboard");
+        } catch (e) {
+          console.error("Gagal parse pe_user:", e);
+          safeStorage.removeItem("pe_user");
+        }
       }
 
-      const storedProducts = localStorage.getItem("pe_products");
+      const storedProducts = safeStorage.getItem("pe_products");
       if (storedProducts) {
-        setProducts(JSON.parse(storedProducts));
+        try {
+          setProducts(JSON.parse(storedProducts));
+        } catch (e) {
+          setProducts(DEFAULT_PRODUCTS);
+          safeStorage.setItem("pe_products", JSON.stringify(DEFAULT_PRODUCTS));
+        }
       } else {
         setProducts(DEFAULT_PRODUCTS);
-        localStorage.setItem("pe_products", JSON.stringify(DEFAULT_PRODUCTS));
+        safeStorage.setItem("pe_products", JSON.stringify(DEFAULT_PRODUCTS));
       }
 
-      const storedSlots = localStorage.getItem("pe_slots");
+      const storedSlots = safeStorage.getItem("pe_slots");
       if (storedSlots) {
-        setParkingLots(JSON.parse(storedSlots));
+        try {
+          setParkingLots(JSON.parse(storedSlots));
+        } catch (e) {
+          setParkingLots(DEFAULT_SLOTS);
+          safeStorage.setItem("pe_slots", JSON.stringify(DEFAULT_SLOTS));
+        }
       } else {
         setParkingLots(DEFAULT_SLOTS);
-        localStorage.setItem("pe_slots", JSON.stringify(DEFAULT_SLOTS));
+        safeStorage.setItem("pe_slots", JSON.stringify(DEFAULT_SLOTS));
       }
 
       setLoading(false);
@@ -111,28 +169,30 @@ export default function App() {
     return () => clearTimeout(timer);
   }, []);
 
-  // Update data ke localStorage setiap kali ada perubahan
+  // Update data ke safeStorage setiap kali ada perubahan
   const updateLocalProducts = (newProds: Product[]) => {
     setProducts(newProds);
-    localStorage.setItem("pe_products", JSON.stringify(newProds));
+    safeStorage.setItem("pe_products", JSON.stringify(newProds));
   };
 
   const updateLocalSlots = (newSlots: ParkingSlot[]) => {
     setParkingLots(newSlots);
-    localStorage.setItem("pe_slots", JSON.stringify(newSlots));
+    safeStorage.setItem("pe_slots", JSON.stringify(newSlots));
   };
 
-  // Simulasi login demo instan (Tanpa Firebase database/auth yang rumit)
-  const handleDemoLogin = () => {
-    const demoUser = { displayName: "Steven Bernando", email: "stevenbernando09@gmail.com" };
+  // Simulasi login demo instan
+  const handleDemoLogin = (customName?: string, customEmail?: string) => {
+    const nameToUse = customName || loginName || "Steven Bernando";
+    const emailToUse = customEmail || loginEmail || "stevenbernando09@gmail.com";
+    const demoUser = { displayName: nameToUse, email: emailToUse };
     setUser(demoUser);
-    localStorage.setItem("pe_user", JSON.stringify(demoUser));
+    safeStorage.setItem("pe_user", JSON.stringify(demoUser));
     setView("dashboard");
   };
 
   const handleLogout = () => {
     setUser(null);
-    localStorage.removeItem("pe_user");
+    safeStorage.removeItem("pe_user");
     setView("landing");
   };
 
@@ -141,8 +201,12 @@ export default function App() {
     e.preventDefault();
     if (!newProdName.trim()) return;
 
+    const newProdId = typeof crypto !== "undefined" && typeof crypto.randomUUID === "function" 
+      ? crypto.randomUUID() 
+      : Math.random().toString(36).substring(2, 11) + "_" + Date.now();
+
     const newProd: Product = {
-      id: crypto.randomUUID(),
+      id: newProdId,
       name: newProdName,
       sku: newProdSku.trim() || "PE-" + Math.random().toString(36).substring(3, 8).toUpperCase(),
       stock: Number(newProdStock) || 0,
@@ -215,10 +279,10 @@ export default function App() {
                 if (user) {
                   setView(view === "landing" ? "dashboard" : "landing");
                 } else {
-                  handleDemoLogin();
+                  setShowLoginModal(true);
                 }
               }}
-              className="text-xs font-semibold text-slate-500 hover:text-slate-900 tracking-wide transition-colors uppercase"
+              className="text-xs font-semibold text-slate-500 hover:text-slate-900 tracking-wide transition-colors uppercase cursor-pointer"
             >
               {user ? (view === "landing" ? "Kembali ke Dasbor" : "Halaman Utama") : "Uji Coba Demo"}
             </button>
@@ -232,15 +296,15 @@ export default function App() {
                 <button 
                   onClick={handleLogout}
                   title="Keluar"
-                  className="w-9 h-9 rounded-full bg-slate-50 flex items-center justify-center hover:bg-slate-900 hover:text-white transition-all border border-slate-100"
+                  className="w-9 h-9 rounded-full bg-slate-50 flex items-center justify-center hover:bg-slate-900 hover:text-white transition-all border border-slate-100 cursor-pointer"
                 >
                   <LogOut className="w-3.5 h-3.5" />
                 </button>
               </div>
             ) : (
               <button 
-                onClick={handleDemoLogin}
-                className="bg-slate-900 hover:bg-slate-800 text-white px-7 py-2.5 rounded-full text-xs font-bold transition-all shadow-xl shadow-slate-900/10 active:scale-95 flex items-center gap-2"
+                onClick={() => setShowLoginModal(true)}
+                className="bg-slate-900 hover:bg-slate-800 text-white px-7 py-2.5 rounded-full text-xs font-bold transition-all shadow-xl shadow-slate-900/10 active:scale-95 flex items-center gap-2 cursor-pointer"
               >
                 <LogIn className="w-3.5 h-3.5" />
                 MASUK DEMO
@@ -259,7 +323,7 @@ export default function App() {
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
           >
-            <LandingView onGetStarted={user ? () => setView("dashboard") : handleDemoLogin} />
+            <LandingView onGetStarted={user ? () => setView("dashboard") : () => setShowLoginModal(true)} />
           </motion.div>
         ) : (
           <motion.div 
@@ -450,20 +514,22 @@ export default function App() {
       {/* Add Product Modal Component */}
       <AnimatePresence>
         {showAddModal && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center p-4"
+          >
             {/* Backdrop */}
-            <motion.div 
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
+            <div 
               onClick={() => setShowAddModal(false)}
               className="absolute inset-0 bg-slate-900/50 backdrop-blur-sm"
             />
             {/* Content Card */}
             <motion.div 
-              initial={{ scale: 0.95, opacity: 0, y: 10 }}
-              animate={{ scale: 1, opacity: 1, y: 0 }}
-              exit={{ scale: 0.95, opacity: 0, y: 10 }}
+              initial={{ scale: 0.95, y: 10 }}
+              animate={{ scale: 1, y: 0 }}
+              exit={{ scale: 0.95, y: 10 }}
               className="bg-white rounded-[3rem] border border-slate-100 shadow-2xl relative z-10 w-full max-w-lg overflow-hidden p-10"
             >
               <div className="flex justify-between items-center mb-8">
@@ -543,7 +609,103 @@ export default function App() {
                 </div>
               </form>
             </motion.div>
-          </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Login Modal Component */}
+      <AnimatePresence>
+        {showLoginModal && (
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center p-4"
+          >
+            {/* Backdrop */}
+            <div 
+              onClick={() => setShowLoginModal(false)}
+              className="absolute inset-0 bg-slate-900/50 backdrop-blur-sm"
+            />
+            {/* Content Card */}
+            <motion.div 
+              initial={{ scale: 0.95, y: 10 }}
+              animate={{ scale: 1, y: 0 }}
+              exit={{ scale: 0.95, y: 10 }}
+              className="bg-white rounded-[3rem] border border-slate-100 shadow-2xl relative z-10 w-full max-w-md overflow-hidden p-10"
+            >
+              <div className="flex justify-between items-center mb-8">
+                <div>
+                  <h3 className="text-2xl font-bold text-slate-900">Masuk ParkEase</h3>
+                  <p className="text-xs text-slate-400 mt-1">Uji coba dasbor internal & logistik perkotaan</p>
+                </div>
+                <button 
+                  onClick={() => setShowLoginModal(false)}
+                  className="w-10 h-10 rounded-full bg-slate-50 flex items-center justify-center hover:bg-slate-100 transition-colors cursor-pointer"
+                >
+                  <X className="w-5 h-5 text-slate-500" />
+                </button>
+              </div>
+
+              <form onSubmit={(e) => {
+                e.preventDefault();
+                handleDemoLogin(loginName, loginEmail);
+                setShowLoginModal(false);
+              }} className="space-y-6">
+                <div>
+                  <label className="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-2">Nama Lengkap</label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="Steven Bernando"
+                    value={loginName}
+                    onChange={(e) => setLoginName(e.target.value)}
+                    className="w-full px-5 py-4 bg-slate-50 border border-slate-200 rounded-2xl outline-none focus:border-slate-900 text-sm font-medium text-slate-900 transition-all"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-2">Alamat Email</label>
+                  <input
+                    type="email"
+                    required
+                    placeholder="stevenbernando09@gmail.com"
+                    value={loginEmail}
+                    onChange={(e) => setLoginEmail(e.target.value)}
+                    className="w-full px-5 py-4 bg-slate-50 border border-slate-200 rounded-2xl outline-none focus:border-slate-900 text-sm font-medium text-slate-900 transition-all"
+                  />
+                </div>
+
+                <div className="bg-slate-50 p-5 rounded-2xl border border-slate-100 text-xs text-slate-500 leading-relaxed">
+                  🔒 Keamanan terjamin: Data login dan sinkronisasi disimpan aman secara offline di peramban browser lokal Anda.
+                </div>
+
+                <button
+                  type="submit"
+                  className="w-full py-4 bg-slate-900 hover:bg-slate-800 text-white rounded-2xl text-xs font-bold transition-all shadow-lg text-center cursor-pointer uppercase tracking-wider block"
+                >
+                  Masuk ke Dasbor
+                </button>
+
+                <div className="relative flex py-2 items-center">
+                  <div className="flex-grow border-t border-slate-200"></div>
+                  <span className="flex-shrink mx-4 text-slate-300 text-[10px] font-bold uppercase tracking-widest">Atau</span>
+                  <div className="flex-grow border-t border-slate-200"></div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    handleDemoLogin("Steven Bernando", "stevenbernando09@gmail.com");
+                    setShowLoginModal(false);
+                  }}
+                  className="w-full py-4 bg-slate-50 hover:bg-slate-100 text-slate-700 rounded-2xl text-xs font-bold transition-all border border-slate-200 text-center cursor-pointer uppercase tracking-wider block"
+                >
+                  ⚡ Masuk Instan (Satu-Klik)
+                </button>
+              </form>
+            </motion.div>
+          </motion.div>
         )}
       </AnimatePresence>
 
