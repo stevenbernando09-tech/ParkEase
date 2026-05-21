@@ -1,4 +1,23 @@
 import { useEffect, useState, ReactNode, FormEvent } from "react";
+import { auth } from "./lib/firebase";
+import { 
+  signInWithPopup, 
+  GoogleAuthProvider, 
+  signOut, 
+  onAuthStateChanged,
+  signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
+  updateProfile
+} from "firebase/auth";
+import {
+  getProducts,
+  createProduct,
+  deleteProductFromDb,
+  ensureParkingLotExists,
+  getParkingSlots,
+  createOrUpdateParkingSlot,
+  updateParkingSlotStatus
+} from "./services/firestoreService";
 import { 
   Cloud, 
   ShoppingBag, 
@@ -104,7 +123,7 @@ const safeStorage = {
 };
 
 export default function App() {
-  const [user, setUser] = useState<{ displayName: string; email: string } | null>(null);
+  const [user, setUser] = useState<{ displayName: string; email: string; uid?: string; isRealFirebase?: boolean } | null>(null);
   const [loading, setLoading] = useState(true);
   const [view, setView] = useState<"landing" | "dashboard">("landing");
   const [products, setProducts] = useState<Product[]>([]);
@@ -122,54 +141,119 @@ export default function App() {
   const [loginName, setLoginName] = useState("Steven Bernando");
   const [loginEmail, setLoginEmail] = useState("stevenbernando09@gmail.com");
 
-  // Load data dari safeStorage (Offline First)
-  useEffect(() => {
-    // Simulasi loading screen singkat agar terlihat sangat profesional
-    const timer = setTimeout(() => {
-      const storedUser = safeStorage.getItem("pe_user");
-      if (storedUser) {
-        try {
-          setUser(JSON.parse(storedUser));
-          setView("dashboard");
-        } catch (e) {
-          console.error("Gagal parse pe_user:", e);
-          safeStorage.removeItem("pe_user");
-        }
-      }
+  // State baru untuk login & otentikasi Database Riil (Firebase)
+  const [activeLoginTab, setActiveLoginTab] = useState<"database" | "demo">("database");
+  const [dbEmail, setDbEmail] = useState("");
+  const [dbPassword, setDbPassword] = useState("");
+  const [isRegistering, setIsRegistering] = useState(false);
+  const [authError, setAuthError] = useState("");
+  const [authSuccess, setAuthSuccess] = useState("");
 
-      const storedProducts = safeStorage.getItem("pe_products");
-      if (storedProducts) {
-        try {
-          setProducts(JSON.parse(storedProducts));
-        } catch (e) {
+  // Memuat data pengguna dan mensinkronisasikannya dengan database riil (Firestore) atau penyimpanan lokal
+  const loadUserData = async (currentUser: { displayName: string; email: string; uid?: string; isRealFirebase?: boolean }) => {
+    setLoading(true);
+    try {
+      if (currentUser.isRealFirebase && currentUser.uid) {
+        const userId = currentUser.uid;
+        const lotId = `lot_${userId}`;
+        
+        // Memastikan dokumen lahan parkir utama milik pengguna ini dibuat terlebih dahulu
+        await ensureParkingLotExists(userId, lotId, `Lahan Parkir ${currentUser.displayName.split(' ')[0]}`);
+
+        // 1. Ambil produk dari Firestore
+        const dbProducts = await getProducts(userId);
+        if (dbProducts && dbProducts.length > 0) {
+          setProducts(dbProducts);
+        } else {
+          // Inisialisasi awal produk default di database
+          for (const p of DEFAULT_PRODUCTS) {
+            await createProduct(userId, p);
+          }
           setProducts(DEFAULT_PRODUCTS);
-          safeStorage.setItem("pe_products", JSON.stringify(DEFAULT_PRODUCTS));
         }
-      } else {
-        setProducts(DEFAULT_PRODUCTS);
-        safeStorage.setItem("pe_products", JSON.stringify(DEFAULT_PRODUCTS));
-      }
 
-      const storedSlots = safeStorage.getItem("pe_slots");
-      if (storedSlots) {
-        try {
-          setParkingLots(JSON.parse(storedSlots));
-        } catch (e) {
+        // 2. Ambil slot parkir dari Firestore subcollection
+        const dbSlots = await getParkingSlots(lotId);
+        if (dbSlots && dbSlots.length > 0) {
+          setParkingLots(dbSlots);
+        } else {
+          // Inisialisasi awal slot parkir default kelolaan di database
+          for (const s of DEFAULT_SLOTS) {
+            await createOrUpdateParkingSlot(lotId, s);
+          }
           setParkingLots(DEFAULT_SLOTS);
-          safeStorage.setItem("pe_slots", JSON.stringify(DEFAULT_SLOTS));
         }
       } else {
-        setParkingLots(DEFAULT_SLOTS);
-        safeStorage.setItem("pe_slots", JSON.stringify(DEFAULT_SLOTS));
+        // Mode Demo Offline: Muat dari safeStorage browser peramban
+        const storedProducts = safeStorage.getItem("pe_products");
+        if (storedProducts) {
+          try {
+            setProducts(JSON.parse(storedProducts));
+          } catch (e) {
+            setProducts(DEFAULT_PRODUCTS);
+          }
+        } else {
+          setProducts(DEFAULT_PRODUCTS);
+        }
+
+        const storedSlots = safeStorage.getItem("pe_slots");
+        if (storedSlots) {
+          try {
+            setParkingLots(JSON.parse(storedSlots));
+          } catch (e) {
+            setParkingLots(DEFAULT_SLOTS);
+          }
+        } else {
+          setParkingLots(DEFAULT_SLOTS);
+        }
       }
-
+    } catch (err) {
+      console.error("Kesalahan saat sinkronisasi database:", err);
+    } finally {
       setLoading(false);
-    }, 600);
+    }
+  };
 
-    return () => clearTimeout(timer);
+  // Langganan Perubahan Status Otentikasi secara Real-Time dengan Firebase Auth
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, async (fbUser) => {
+      if (fbUser) {
+        const loggedUser = {
+          displayName: fbUser.displayName || fbUser.email?.split("@")[0] || "Steven Bernando",
+          email: fbUser.email || "stevenbernando09@gmail.com",
+          uid: fbUser.uid,
+          isRealFirebase: true
+        };
+        setUser(loggedUser);
+        safeStorage.setItem("pe_user", JSON.stringify(loggedUser));
+        setView("dashboard");
+        await loadUserData(loggedUser);
+      } else {
+        // Cek jika ada pengguna demo offline yang sebelumnya tersimpan aktif
+        const storedUser = safeStorage.getItem("pe_user");
+        if (storedUser) {
+          try {
+            const parsed = JSON.parse(storedUser);
+            setUser(parsed);
+            setView("dashboard");
+            await loadUserData(parsed);
+          } catch (e) {
+            safeStorage.removeItem("pe_user");
+            setLoading(false);
+          }
+        } else {
+          // Jika kosong, pakai default offline
+          setProducts(DEFAULT_PRODUCTS);
+          setParkingLots(DEFAULT_SLOTS);
+          setLoading(false);
+        }
+      }
+    });
+
+    return () => unsubscribe();
   }, []);
 
-  // Update data ke safeStorage setiap kali ada perubahan
+  // Update data ke penyimpanan lokal offline (cadangan fallback)
   const updateLocalProducts = (newProds: Product[]) => {
     setProducts(newProds);
     safeStorage.setItem("pe_products", JSON.stringify(newProds));
@@ -180,24 +264,98 @@ export default function App() {
     safeStorage.setItem("pe_slots", JSON.stringify(newSlots));
   };
 
-  // Simulasi login demo instan
-  const handleDemoLogin = (customName?: string, customEmail?: string) => {
+  // Simulasi Masuk Instan (Satu-Klik) untuk pengujian cepat
+  const handleDemoLogin = async (customName?: string, customEmail?: string) => {
     const nameToUse = customName || loginName || "Steven Bernando";
     const emailToUse = customEmail || loginEmail || "stevenbernando09@gmail.com";
-    const demoUser = { displayName: nameToUse, email: emailToUse };
+    const demoUser = { displayName: nameToUse, email: emailToUse, isRealFirebase: false };
     setUser(demoUser);
     safeStorage.setItem("pe_user", JSON.stringify(demoUser));
     setView("dashboard");
+    await loadUserData(demoUser);
   };
 
-  const handleLogout = () => {
+  // Fungsi Masuk Melalui Google Auth (Ramah localhost)
+  const handleGoogleLogin = async () => {
+    setAuthError("");
+    setAuthSuccess("");
+    try {
+      const provider = new GoogleAuthProvider();
+      await signInWithPopup(auth, provider);
+      setShowLoginModal(false);
+    } catch (err: any) {
+      console.error("Gagal masuk dengan Google:", err);
+      if (err.message?.includes("auth/popup-blocked")) {
+        setAuthError("Popup diblokir oleh browser. Harap izinkan popup untuk masuk.");
+      } else {
+        setAuthError(err.message || "Gagal melakukan otentikasi Google.");
+      }
+    }
+  };
+
+  // Fungsi Masuk & Daftar Menggunakan Email & Password Riil
+  const handleEmailPasswordAuth = async (e: FormEvent) => {
+    e.preventDefault();
+    setAuthError("");
+    setAuthSuccess("");
+    if (!dbEmail.trim() || !dbPassword.trim()) {
+      setAuthError("Email dan Kata Sandi wajib diisi!");
+      return;
+    }
+    try {
+      if (isRegistering) {
+        // Melakukan registrasi akun baru di Firebase Auth
+        const credential = await createUserWithEmailAndPassword(auth, dbEmail, dbPassword);
+        // Memperbarui nama tampilan di profil dengan bagian depan email
+        const generatedName = dbEmail.split('@')[0];
+        await updateProfile(credential.user, {
+          displayName: generatedName
+        });
+        setAuthSuccess("Pendaftaran berhasil! Akun cloud Anda sedang dipersiapkan...");
+        setTimeout(() => {
+          setShowLoginModal(false);
+          setDbEmail("");
+          setDbPassword("");
+        }, 1200);
+      } else {
+        // Melakukan proses masuk akun di Firebase Auth
+        await signInWithEmailAndPassword(auth, dbEmail, dbPassword);
+        setAuthSuccess("Berhasil masuk! Menghubungkan ke server awan...");
+        setTimeout(() => {
+          setShowLoginModal(false);
+          setDbEmail("");
+          setDbPassword("");
+        }, 1200);
+      }
+    } catch (err: any) {
+      console.error("Gagal otentikasi email/sandi:", err);
+      if (err.code === "auth/invalid-credential") {
+        setAuthError("Email atau sandi salah. Harap periksa kembali.");
+      } else if (err.code === "auth/weak-password") {
+        setAuthError("Kata sandi terlalu lemah (minimal 6 karakter).");
+      } else if (err.code === "auth/email-already-in-use") {
+        setAuthError("Email sudah terdaftar. Silakan pilih menu masuk.");
+      } else {
+        setAuthError(err.message || "Gagal memproses permintaan autentikasi.");
+      }
+    }
+  };
+
+  const handleLogout = async () => {
+    try {
+      if (user?.isRealFirebase) {
+        await signOut(auth);
+      }
+    } catch (err) {
+      console.error("Gagal keluar akun:", err);
+    }
     setUser(null);
     safeStorage.removeItem("pe_user");
     setView("landing");
   };
 
   // Logika Tambah Produk
-  const handleCreateProduct = (e: FormEvent) => {
+  const handleCreateProduct = async (e: FormEvent) => {
     e.preventDefault();
     if (!newProdName.trim()) return;
 
@@ -214,8 +372,21 @@ export default function App() {
       createdAt: new Date().toISOString().split('T')[0]
     };
 
-    const updated = [newProd, ...products];
-    updateLocalProducts(updated);
+    if (user?.isRealFirebase && user.uid) {
+      setLoading(true);
+      try {
+        await createProduct(user.uid, newProd);
+        const dbProducts = await getProducts(user.uid);
+        setProducts(dbProducts || []);
+      } catch (err) {
+        console.error("Gagal menyimpan produk ke Firestore:", err);
+      } finally {
+        setLoading(false);
+      }
+    } else {
+      const updated = [newProd, ...products];
+      updateLocalProducts(updated);
+    }
 
     // Reset Form & Tutup Modal
     setNewProdName("");
@@ -226,25 +397,54 @@ export default function App() {
   };
 
   // Logika Hapus Produk
-  const handleDeleteProduct = (id: string) => {
-    if (confirm("Apakah Anda yakin ingin menghapus produk ini secara permanen dari penyimpanan lokal?")) {
-      const updated = products.filter(p => p.id !== id);
-      updateLocalProducts(updated);
+  const handleDeleteProduct = async (id: string) => {
+    if (confirm("Apakah Anda yakin ingin menghapus produk ini secara permanen?")) {
+      if (user?.isRealFirebase && user.uid) {
+        setLoading(true);
+        try {
+          await deleteProductFromDb(id);
+          const dbProducts = await getProducts(user.uid);
+          setProducts(dbProducts || []);
+        } catch (err) {
+          console.error("Gagal menghapus produk dari Firestore:", err);
+        } finally {
+          setLoading(false);
+        }
+      } else {
+        const updated = products.filter(p => p.id !== id);
+        updateLocalProducts(updated);
+      }
     }
   };
 
   // Logika Interaktif Klik Slot Map (Toggle Status Parkir secara Live)
-  const handleToggleSlotStatus = (slotId: string) => {
-    const updated = parkingLots.map(slot => {
-      if (slot.id === slotId) {
-        return {
-          ...slot,
-          status: slot.status === "Tersedia" ? "Terisi" as const : "Tersedia" as const
-        };
+  const handleToggleSlotStatus = async (slotId: string) => {
+    const targetSlot = parkingLots.find(s => s.id === slotId);
+    if (!targetSlot) return;
+    
+    const updatedStatus = targetSlot.status === "Tersedia" ? "Terisi" : "Tersedia";
+
+    if (user?.isRealFirebase && user.uid) {
+      const lotId = `lot_${user.uid}`;
+      try {
+        await updateParkingSlotStatus(lotId, slotId, updatedStatus);
+        const dbSlots = await getParkingSlots(lotId);
+        setParkingLots(dbSlots || []);
+      } catch (err) {
+        console.error("Gagal memperbarui status slot parkir di Firestore:", err);
       }
-      return slot;
-    });
-    updateLocalSlots(updated);
+    } else {
+      const updated = parkingLots.map(slot => {
+        if (slot.id === slotId) {
+          return {
+            ...slot,
+            status: updatedStatus
+          };
+        }
+        return slot;
+      });
+      updateLocalSlots(updated);
+    }
   };
 
   // Hitung jumlah slot yang terisi vs tersedia secara dinamis
@@ -291,7 +491,9 @@ export default function App() {
               <div className="flex items-center gap-3 pl-4 border-l border-slate-100">
                 <div className="hidden sm:flex flex-col items-end">
                   <span className="text-[11px] font-bold text-slate-900 tracking-tight">{user.displayName}</span>
-                  <span className="text-[9px] text-slate-400 uppercase font-bold tracking-widest leading-none mt-0.5">Akun Demo</span>
+                  <span className="text-[9px] text-slate-400 uppercase font-bold tracking-widest leading-none mt-0.5">
+                    {user.isRealFirebase ? "Akun Cloud" : "Akun Demo"}
+                  </span>
                 </div>
                 <button 
                   onClick={handleLogout}
@@ -307,7 +509,7 @@ export default function App() {
                 className="bg-slate-900 hover:bg-slate-800 text-white px-7 py-2.5 rounded-full text-xs font-bold transition-all shadow-xl shadow-slate-900/10 active:scale-95 flex items-center gap-2 cursor-pointer"
               >
                 <LogIn className="w-3.5 h-3.5" />
-                MASUK DEMO
+                MASUK / DAFTAR
               </button>
             )}
           </div>
@@ -634,7 +836,7 @@ export default function App() {
               exit={{ scale: 0.95, y: 10 }}
               className="bg-white rounded-[3rem] border border-slate-100 shadow-2xl relative z-10 w-full max-w-md overflow-hidden p-10"
             >
-              <div className="flex justify-between items-center mb-8">
+              <div className="flex justify-between items-center mb-6">
                 <div>
                   <h3 className="text-2xl font-bold text-slate-900">Masuk ParkEase</h3>
                   <p className="text-xs text-slate-400 mt-1">Uji coba dasbor internal & logistik perkotaan</p>
@@ -647,63 +849,178 @@ export default function App() {
                 </button>
               </div>
 
-              <form onSubmit={(e) => {
-                e.preventDefault();
-                handleDemoLogin(loginName, loginEmail);
-                setShowLoginModal(false);
-              }} className="space-y-6">
-                <div>
-                  <label className="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-2">Nama Lengkap</label>
-                  <input
-                    type="text"
-                    required
-                    placeholder="Steven Bernando"
-                    value={loginName}
-                    onChange={(e) => setLoginName(e.target.value)}
-                    className="w-full px-5 py-4 bg-slate-50 border border-slate-200 rounded-2xl outline-none focus:border-slate-900 text-sm font-medium text-slate-900 transition-all"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-2">Alamat Email</label>
-                  <input
-                    type="email"
-                    required
-                    placeholder="stevenbernando09@gmail.com"
-                    value={loginEmail}
-                    onChange={(e) => setLoginEmail(e.target.value)}
-                    className="w-full px-5 py-4 bg-slate-50 border border-slate-200 rounded-2xl outline-none focus:border-slate-900 text-sm font-medium text-slate-900 transition-all"
-                  />
-                </div>
-
-                <div className="bg-slate-50 p-5 rounded-2xl border border-slate-100 text-xs text-slate-500 leading-relaxed">
-                  🔒 Keamanan terjamin: Data login dan sinkronisasi disimpan aman secara offline di peramban browser lokal Anda.
-                </div>
-
-                <button
-                  type="submit"
-                  className="w-full py-4 bg-slate-900 hover:bg-slate-800 text-white rounded-2xl text-xs font-bold transition-all shadow-lg text-center cursor-pointer uppercase tracking-wider block"
-                >
-                  Masuk ke Dasbor
-                </button>
-
-                <div className="relative flex py-2 items-center">
-                  <div className="flex-grow border-t border-slate-200"></div>
-                  <span className="flex-shrink mx-4 text-slate-300 text-[10px] font-bold uppercase tracking-widest">Atau</span>
-                  <div className="flex-grow border-t border-slate-200"></div>
-                </div>
-
+              {/* Tab Selector */}
+              <div className="flex border-b border-slate-100 mb-6">
                 <button
                   type="button"
                   onClick={() => {
-                    handleDemoLogin("Steven Bernando", "stevenbernando09@gmail.com");
-                    setShowLoginModal(false);
+                    setActiveLoginTab("database");
+                    setAuthError("");
+                    setAuthSuccess("");
                   }}
-                  className="w-full py-4 bg-slate-50 hover:bg-slate-100 text-slate-700 rounded-2xl text-xs font-bold transition-all border border-slate-200 text-center cursor-pointer uppercase tracking-wider block"
+                  className={`flex-1 pb-3 text-xs font-bold uppercase tracking-widest border-b-2 transition-all cursor-pointer ${
+                    activeLoginTab === "database"
+                      ? "border-slate-900 text-slate-900 font-black"
+                      : "border-transparent text-slate-400 hover:text-slate-600"
+                  }`}
                 >
-                  ⚡ Masuk Instan (Satu-Klik)
+                  🌐 Database Cloud
                 </button>
-              </form>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActiveLoginTab("demo");
+                    setAuthError("");
+                    setAuthSuccess("");
+                  }}
+                  className={`flex-1 pb-3 text-xs font-bold uppercase tracking-widest border-b-2 transition-all cursor-pointer ${
+                    activeLoginTab === "demo"
+                      ? "border-slate-900 text-slate-900 font-black"
+                      : "border-transparent text-slate-400 hover:text-slate-600"
+                  }`}
+                >
+                  ⚡ Demo Instan
+                </button>
+              </div>
+
+              {activeLoginTab === "database" ? (
+                <div>
+                  <button
+                    type="button"
+                    onClick={handleGoogleLogin}
+                    className="w-full py-4 bg-slate-900 hover:bg-slate-850 text-white rounded-2xl text-xs font-bold transition-all shadow-lg flex items-center justify-center gap-3 cursor-pointer uppercase tracking-wider mb-4"
+                  >
+                    <Cloud className="w-4 h-4 text-white" />
+                    Masuk dengan Google
+                  </button>
+
+                  <div className="relative flex py-2 items-center">
+                    <div className="flex-grow border-t border-slate-100 animate-pulse"></div>
+                    <span className="flex-shrink mx-4 text-slate-300 text-[9px] font-bold uppercase tracking-widest leading-none">Atau Email & Sandi</span>
+                    <div className="flex-grow border-t border-slate-100 animate-pulse"></div>
+                  </div>
+
+                  <form onSubmit={handleEmailPasswordAuth} className="space-y-4 mt-4 text-left">
+                    {authError && (
+                      <div className="p-4 bg-red-50 border border-red-100 text-red-600 rounded-2xl text-xs font-medium leading-relaxed">
+                        ⚠️ {authError}
+                      </div>
+                    )}
+                    {authSuccess && (
+                      <div className="p-4 bg-emerald-50 border border-emerald-100 text-emerald-600 rounded-2xl text-xs font-medium leading-relaxed">
+                        ✓ {authSuccess}
+                      </div>
+                    )}
+
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">Alamat Email</label>
+                      <input
+                        type="email"
+                        required
+                        placeholder="nama@email.com"
+                        value={dbEmail}
+                        onChange={(e) => setDbEmail(e.target.value)}
+                        className="w-full px-5 py-3.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:border-slate-900 text-sm font-medium text-slate-900 transition-all focus:ring-1 focus:ring-slate-900/5"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">Kata Sandi</label>
+                      <input
+                        type="password"
+                        required
+                        placeholder="Minimal 6 karakter"
+                        value={dbPassword}
+                        onChange={(e) => setDbPassword(e.target.value)}
+                        className="w-full px-5 py-3.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:border-slate-900 text-sm font-medium text-slate-900 transition-all focus:ring-1 focus:ring-slate-900/5"
+                      />
+                    </div>
+
+                    <div className="flex items-center justify-between text-xs pt-1">
+                      <span className="text-slate-400">
+                        {isRegistering ? "Sudah memiliki akun?" : "Belum punya akun?"}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsRegistering(!isRegistering);
+                          setAuthError("");
+                          setAuthSuccess("");
+                        }}
+                        className="text-slate-900 font-bold hover:underline cursor-pointer"
+                      >
+                        {isRegistering ? "Masuk Sekarang" : "Daftar Akun Baru"}
+                      </button>
+                    </div>
+
+                    <button
+                      type="submit"
+                      className="w-full py-4 mt-2 bg-slate-900 hover:bg-slate-800 text-white rounded-2xl text-xs font-bold transition-all shadow-md text-center cursor-pointer uppercase tracking-wider block"
+                    >
+                      {isRegistering ? "Daftar Akun & Masuk" : "Masuk ke Akun Cloud"}
+                    </button>
+                  </form>
+                </div>
+              ) : (
+                <form onSubmit={(e) => {
+                  e.preventDefault();
+                  handleDemoLogin(loginName, loginEmail);
+                  setShowLoginModal(false);
+                }} className="space-y-4 text-left">
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">Nama Lengkap</label>
+                    <input
+                      type="text"
+                      required
+                      placeholder="Steven Bernando"
+                      value={loginName}
+                      onChange={(e) => setLoginName(e.target.value)}
+                      className="w-full px-5 py-3.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:border-slate-900 text-sm font-medium text-slate-900 transition-all focus:ring-1 focus:ring-slate-900/5"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">Alamat Email</label>
+                    <input
+                      type="email"
+                      required
+                      placeholder="stevenbernando09@gmail.com"
+                      value={loginEmail}
+                      onChange={(e) => setLoginEmail(e.target.value)}
+                      className="w-full px-5 py-3.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:border-slate-900 text-sm font-medium text-slate-900 transition-all focus:ring-1 focus:ring-slate-900/5"
+                    />
+                  </div>
+
+                  <div className="bg-slate-50 p-4 rounded-xl border border-slate-100 text-[11px] text-slate-400 leading-relaxed text-left flex gap-2">
+                    <span className="text-sm">🔒</span>
+                    <span>Data demo disimpan secara lokal offline di peramban browser Anda tanpa koneksi awan.</span>
+                  </div>
+
+                  <button
+                    type="submit"
+                    className="w-full py-4 mt-2 bg-slate-900 hover:bg-slate-800 text-white rounded-2xl text-xs font-bold transition-all shadow-lg text-center cursor-pointer uppercase tracking-wider block"
+                  >
+                    Masuk ke Dasbor Demo
+                  </button>
+
+                  <div className="relative flex py-2 items-center">
+                    <div className="flex-grow border-t border-slate-100"></div>
+                    <span className="flex-shrink mx-4 text-slate-300 text-[9px] font-bold uppercase tracking-widest">Atau</span>
+                    <div className="flex-grow border-t border-slate-100"></div>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      handleDemoLogin("Steven Bernando", "stevenbernando09@gmail.com");
+                      setShowLoginModal(false);
+                    }}
+                    className="w-full py-4 bg-slate-50 hover:bg-slate-150 text-slate-700 rounded-2xl text-xs font-bold transition-all border border-slate-200 text-center cursor-pointer uppercase tracking-wider block"
+                  >
+                    ⚡ Masuk Instan (Satu-Klik)
+                  </button>
+                </form>
+              )}
             </motion.div>
           </motion.div>
         )}
